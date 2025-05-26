@@ -1,0 +1,6 @@
+create or replace TABLE CRICKET.PUBLIC.PLAYER_DIM (
+	PLAYER_ID NUMBER(38,0) NOT NULL autoincrement start 1 increment 1 noorder,
+	TEAM_ID NUMBER(38,0) NOT NULL,
+	PLAYER_NAME VARCHAR(16777216) NOT NULL,
+	primary key (PLAYER_ID)
+);

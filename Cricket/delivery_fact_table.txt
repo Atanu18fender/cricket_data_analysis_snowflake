@@ -1,0 +1,165 @@
+--delivery_fact_table--
+
+use database cricket;
+use role sysadmin;
+use warehouse compute_wh;
+use schema cricket.public;
+
+-- let's populate delivery fact table --
+select * from cricket.clean.delivery_clean_tbl
+where match_type_number=4686;
+
+-- version 1 get the team id(518 deliveries/bowls) --
+select d.match_type_number as match_id,
+td.team_id, td.team_name
+from cricket.clean.delivery_clean_tbl d
+join cricket.public.team_dim td
+on d.team_name = td.team_name
+where match_type_number=4686;
+
+-- version 2 get the player id --
+select
+d.match_type_number as match_id,
+td.team_id,td.team_name,
+blr.player_name as bowled_by,
+blr.player_id as bowler_id,
+btr.player_name as batsman,
+btr.player_id as batnman_id,
+nstr.player_name as non_striker,
+nstr.player_id as non_striker_id
+from cricket.clean.delivery_clean_tbl d 
+join cricket.public.team_dim td on d.team_name = td.team_name
+join cricket.public.player_dim blr on d.bowler = blr.player_name
+join cricket.public.player_dim btr on d.batter = btr.player_name
+join cricket.public.player_dim nstr on d.non_striker = nstr.player_name
+where d.match_type_number = 4686;
+
+-- version 3 add measurement --
+select 
+d.match_type_number as match_id,
+td.team_id,
+blr.player_name as bowled_by,
+blr.player_id as bowler_id,
+btr.player_name as batsman,
+btr.player_id as batnman_id,
+nstr.player_name as non_striker,
+nstr.player_id as non_striker_id,
+d.over_number,
+d.run,
+d.extra_runs,
+d.extra_type
+from cricket.clean.delivery_clean_tbl d 
+join cricket.public.team_dim td on d.team_name = td.team_name
+join cricket.public.player_dim blr on d.bowler = blr.player_name
+join cricket.public.player_dim btr on d.batter = btr.player_name
+join cricket.public.player_dim nstr on d.non_striker = nstr.player_name
+where d.match_type_number = 4686;
+
+-- version 4 remove unwanted columns --
+select 
+d.match_type_number as match_id,
+td.team_id,
+blr.player_name as bowled_by,
+blr.player_id as bowler_id,
+btr.player_name as batsman,
+btr.player_id as batnman_id,
+nstr.player_name as non_striker,
+nstr.player_id as non_striker_id,
+d.over_number,
+d.run,
+case when d.extra_runs is null then 0 else d.extra_runs end as extra_runs,
+case when d.extra_type is null then 'None' else d.extra_type end as extra_type,
+case when d.player_out is null then 'None' else d.player_out end as player_out,
+case when d.player_out_kind is null then 'None' else d.player_out_kind end as player_out_kind
+from cricket.clean.delivery_clean_tbl d 
+join cricket.public.team_dim td on d.team_name = td.team_name
+join cricket.public.player_dim blr on d.bowler = blr.player_name
+join cricket.public.player_dim btr on d.batter = btr.player_name
+join cricket.public.player_dim nstr on d.non_striker = nstr.player_name
+where d.match_type_number = 4686;
+
+-- create delivery fact table --
+create or replace table cricket.public.delivery_fact
+(
+    match_id int,
+    team_id int,
+    bowler_id int,
+    batter_id int,
+    non_stiker_id int,
+    over int,
+    runs int,
+    extra_runs int,
+    extra_type varchar(255),
+    player_out varchar(255),
+    player_out_kind varchar(255),
+
+    CONSTRAINT fk_del_match_id foreign key(match_id) references match_fact(match_id),
+    CONSTRAINT fk_del_team foreign key(team_id) references team_dim(team_id),
+    CONSTRAINT fk_bowler foreign key(bowler_id) references player_dim(player_id),
+    CONSTRAINT fk_batter foreign key(batter_id) references player_dim(player_id),
+    CONSTRAINT fk_non_striker foreign key(non_stiker_id) references player_dim(player_id)
+);
+
+-- insert record into delivery fact --
+
+INSERT INTO cricket.public.delivery_fact
+SELECT 
+    d.match_type_number AS match_id,
+    td.team_id AS team_id,  -- batting team
+    
+    -- Correct bowler_id by joining on opponent team
+    blr.player_id AS bowler_id,
+
+    -- Correct batter_id using team_id + player_name
+    btr.player_id AS batter_id,
+
+    -- Correct non-striker_id
+    nstr.player_id AS non_striker_id,
+
+    d.over_number AS over,
+    d.run AS runs,
+    COALESCE(d.extra_runs, 0) AS extra_runs,
+    COALESCE(d.extra_type, 'None') AS extra_type,
+    COALESCE(d.player_out, 'None') AS player_out,
+    COALESCE(d.player_out_kind, 'None') AS player_out_kind
+
+FROM cricket.clean.delivery_clean_tbl d
+-- Get batting team_id
+JOIN cricket.public.team_dim td 
+    ON d.team_name = td.team_name
+-- Match details (for match_id and team matchup)
+JOIN cricket.clean.match_detail_clean mdc 
+    ON d.match_type_number = mdc.match_type_number
+-- Opponent team: if batting team is first, then bowler must be from second, and vice versa
+JOIN cricket.public.team_dim opp_td 
+    ON (
+        mdc.first_team = d.team_name AND mdc.second_team = opp_td.team_name
+        OR
+        mdc.second_team = d.team_name AND mdc.first_team = opp_td.team_name
+    )
+-- Join batter with correct team
+JOIN cricket.public.player_dim btr 
+    ON d.batter = btr.player_name AND td.team_id = btr.team_id
+-- Join non-striker with correct team
+JOIN cricket.public.player_dim nstr 
+    ON d.non_striker = nstr.player_name AND td.team_id = nstr.team_id
+-- Join bowler with **opponent** team
+JOIN cricket.public.player_dim blr 
+    ON d.bowler = blr.player_name AND opp_td.team_id = blr.team_id;
+
+    
+select * from cricket.public.delivery_fact;
+where match_id
+in (
+select match_type_number from 
+    cricket.clean.match_detail_clean where match_type = 'ODI' and YEAR(EVENT_DATE)=2023
+     and EVENT_NAME like 'ICC Cricket World Cup');
+
+
+SELECT 
+  *,
+  ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY over) AS delivery_number_in_team
+FROM cricket.public.delivery_fact
+ORDER BY team_id, over;    
+
+
